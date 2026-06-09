@@ -24,27 +24,42 @@ python -m colab_shell
 ## Usage
 
 ```bash
-colab-shell                 # connect to a runtime terminal (default)
-colab-shell connect         # same as above
-colab-shell connect --keep  # don't delete the runtime when you exit
-colab-shell connect --reauth# force a fresh Google sign-in
+colab-shell                  # connect to a runtime terminal (default)
+colab-shell connect          # same as above
+colab-shell connect --keep   # don't delete the runtime when you exit
+colab-shell connect --new    # allocate a fresh runtime even if one exists
+colab-shell connect --reauth # force a fresh Google sign-in
 
-colab-shell list            # list your active Colab runtimes
-colab-shell kill <id>       # delete a specific runtime (id or unique prefix)
-colab-shell kill --all      # delete all your runtimes
-colab-shell logout          # clear cached credentials
+colab-shell list             # list your active Colab runtimes
+colab-shell kill <id>        # delete a specific runtime (id or unique prefix)
+colab-shell kill --all       # delete all your runtimes
+colab-shell logout           # clear cached credentials
 ```
 
-Press **Ctrl+]** to disconnect from the remote terminal.
+### Key bindings
+
+| Key | Effect |
+|-----|--------|
+| **Ctrl+C** | Interrupt the running command on the remote shell (SIGINT). The session stays open. |
+| **Ctrl+]** | Disconnect from the remote terminal and return to your local shell. |
+| **Arrow keys** | Navigate command history (Up/Down) and move within the current line (Left/Right). |
+| **Home / End** | Jump to the start or end of the current line. |
+| **PageUp / PageDown** | Scroll through shell history. |
 
 ### Behaviour
 
-- **Keep-alive:** while you're in the shell, the runtime is pinged periodically
-  so it won't idle out from inactivity.
-- **Auto-delete on exit:** by default the runtime is released when you exit, so
-  you don't keep burning compute hours. Pass `--keep` to leave it running.
-- **Credential cache:** tokens are cached in `~/.colab-shell/token.json` and
-  refreshed automatically. Use `colab-shell logout` to clear them.
+- **Full interactive terminal:** arrow-key navigation, command history, and
+  line editing all work on both Windows and Unix. Terminal resizes are
+  propagated to the remote PTY automatically.
+- **Keep-alive:** while you're in the shell, the runtime is pinged
+  periodically so it won't idle out from inactivity.
+- **Auto-delete on exit:** by default the runtime is released when you exit,
+  so you don't keep burning compute hours. Pass `--keep` to leave it running.
+- **Robust disconnect:** if the network connection drops, the session ends
+  cleanly and returns you to your local prompt without a traceback.
+- **Credential cache:** tokens are stored in `~/.colab-shell/token.json` with
+  restricted permissions (mode `0600`) and refreshed automatically. Use
+  `colab-shell logout` to clear them.
 
 ## How it works
 

@@ -223,6 +223,15 @@ def main(argv: list[str] | None = None) -> None:
     if not argv:
         argv = ["connect"]
     elif argv[0] not in _COMMANDS and argv[0] not in _TOP_LEVEL:
+        # If the first token looks like a subcommand attempt (no leading dash)
+        # but isn't one we recognise, show a clear error rather than silently
+        # treating it as a `connect` argument.
+        if not argv[0].startswith("-"):
+            err(
+                f"Unknown command '{argv[0]}'. "
+                f"Valid commands: {', '.join(sorted(_COMMANDS))}."
+            )
+            sys.exit(1)
         argv = ["connect", *argv]
 
     parser = _build_parser()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import requests
@@ -115,6 +116,10 @@ class ColabAuth:
 
     def _save(self) -> None:
         TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(TOKEN_DIR, 0o700)
+        except OSError:
+            pass
         TOKEN_FILE.write_text(
             json.dumps(
                 {
@@ -125,6 +130,10 @@ class ColabAuth:
                 }
             )
         )
+        try:
+            os.chmod(TOKEN_FILE, 0o600)
+        except OSError:
+            pass
 
     def _try_load_cached(self) -> bool:
         if not TOKEN_FILE.exists():
