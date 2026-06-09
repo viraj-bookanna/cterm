@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+# (keep uv.lock tracked)
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Local debug logs
+debug-*.log
+
+# Reverse-engineering reference material (not needed at runtime)
+vsix-extracted/
+_colab-xterm-ref/
+*.vsix
