@@ -8,8 +8,8 @@ import sys
 from .constants import XSS_PREFIX
 
 
-def log(msg: str) -> None:
-    print(f"[*] {msg}", flush=True)
+def log(msg: str, end: str = "\n") -> None:
+    print(f"[*] {msg}", end=end, flush=True)
 
 
 def err(msg: str) -> None:

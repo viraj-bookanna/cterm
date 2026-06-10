@@ -96,7 +96,14 @@ class ColabAuth:
     # -- refresh ----------------------------------------------------------
 
     def _refresh(self) -> None:
-        resp = requests.post(
+        # Use a dedicated session with the OS trust store adapter so that
+        # certifi does not override the system CA bundle here.
+        # (InstalledAppFlow for interactive login relies on inject_into_ssl().)
+        from .tls import TruststoreAdapter  # late import avoids circular dep
+
+        sess = requests.Session()
+        sess.mount("https://", TruststoreAdapter())
+        resp = sess.post(
             "https://oauth2.googleapis.com/token",
             timeout=30,
             data={

@@ -28,18 +28,26 @@ import websocket  # websocket-client
 
 from .client import ColabClient
 from .constants import HDR_CLIENT_AGENT, HDR_PROXY_TOKEN
+from .tls import make_ssl_context
 from .utils import err, get_terminal_size, log
 
 
 class ColabTtyBridge:
     """Bridges the local terminal to the Colab runtime via /colab/tty."""
 
-    def __init__(self, client: ColabClient) -> None:
+    def __init__(
+        self,
+        client: ColabClient,
+        startup_cmds: list[str] | None = None,
+    ) -> None:
         self.client = client
         self.ws: websocket.WebSocket | None = None
         self.running = False
         # Set by the SIGWINCH handler on Unix; consumed by the main loop.
         self._winch = False
+        # Commands sent to the remote shell after the session is ready.
+        # Fired 1.5 s after the recv loop starts so the shell prompt is up.
+        self._startup_cmds: list[str] = startup_cmds or []
 
     def connect(self) -> None:
         if not self.client.proxy_url:
@@ -64,6 +72,7 @@ class ColabTtyBridge:
         self.ws.connect(
             ws_url,
             header=[f"{k}: {v}" for k, v in headers.items()],
+            sslopt={"context": make_ssl_context()},
         )
         self.running = True
         log("Connected! You are now in a Colab shell. Press Ctrl+] to exit.\n")
@@ -79,6 +88,10 @@ class ColabTtyBridge:
                 self.ws.send(json.dumps({"cols": cols, "rows": rows}))
             except (websocket.WebSocketException, OSError):
                 pass
+
+    def send_stdin(self, data: str) -> None:
+        """Send text to the remote shell's stdin."""
+        self._send_stdin(data)
 
     def _send_stdin(self, data: str) -> None:
         if not self.ws:
@@ -103,6 +116,13 @@ class ColabTtyBridge:
             except (json.JSONDecodeError, OSError):
                 break
         self.running = False
+
+    def _run_startup(self) -> None:
+        """Send startup commands after a brief delay to let the shell settle."""
+        time.sleep(1.5)
+        for cmd in self._startup_cmds:
+            if self.running:
+                self._send_stdin(cmd)
 
     # -- main loop --------------------------------------------------------
 
@@ -142,6 +162,8 @@ class ColabTtyBridge:
         try:
             tty.setraw(fd)
             threading.Thread(target=self._recv_loop, daemon=True).start()
+            if self._startup_cmds:
+                threading.Thread(target=self._run_startup, daemon=True).start()
             while self.running:
                 if self._winch:
                     self._winch = False
@@ -224,6 +246,8 @@ class ColabTtyBridge:
         last_check = time.time()
 
         threading.Thread(target=self._recv_loop, daemon=True).start()
+        if self._startup_cmds:
+            threading.Thread(target=self._run_startup, daemon=True).start()
         try:
             while self.running:
                 now = time.time()

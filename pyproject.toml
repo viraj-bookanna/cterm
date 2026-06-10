@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-colab-shell = "colab_shell.cli:main"
+cterm = "colab_shell.cli:main"
 
 [build-system]
 requires = ["hatchling"]

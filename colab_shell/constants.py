@@ -28,7 +28,7 @@ SCOPES = [
     "profile",
 ]
 
-TOKEN_DIR = Path.home() / ".colab-shell"
+TOKEN_DIR = Path.home() / ".cterm"
 TOKEN_FILE = TOKEN_DIR / "token.json"
 
 XSS_PREFIX = ")]}'\n"
