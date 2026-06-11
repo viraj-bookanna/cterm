@@ -75,7 +75,7 @@ class ColabTtyBridge:
             sslopt={"context": make_ssl_context()},
         )
         self.running = True
-        log("Connected! You are now in a Colab shell. Press Ctrl+] to exit.\n")
+        log("Connected! You are now in a Colab shell.\n")
 
         cols, rows = get_terminal_size()
         self._send_resize(cols, rows)
@@ -88,10 +88,6 @@ class ColabTtyBridge:
                 self.ws.send(json.dumps({"cols": cols, "rows": rows}))
             except (websocket.WebSocketException, OSError):
                 pass
-
-    def send_stdin(self, data: str) -> None:
-        """Send text to the remote shell's stdin."""
-        self._send_stdin(data)
 
     def _send_stdin(self, data: str) -> None:
         if not self.ws:
@@ -138,7 +134,7 @@ class ColabTtyBridge:
     def _run_unix(self) -> None:
         import select as _select  # noqa: PLC0415
         import signal  # noqa: PLC0415
-        import termios  # noqa: PLC0415  # type: ignore[import]
+        import termios  # noqa: PLC0415  # type: ignore[import]  # pylint: disable=import-error
         import tty  # noqa: PLC0415
 
         fd = sys.stdin.fileno()
@@ -153,7 +149,7 @@ class ColabTtyBridge:
         def _on_winch(_sig, _frame) -> None:
             self._winch = True
 
-        signal.signal(signal.SIGWINCH, _on_winch)  # type: ignore[attr-defined]  # noqa: E501
+        signal.signal(signal.SIGWINCH, _on_winch)  # type: ignore[attr-defined]  # pylint: disable=no-member
 
         # Stateful decoder so multibyte UTF-8 chars split across read()
         # boundaries are assembled correctly instead of being corrupted.
@@ -173,8 +169,6 @@ class ColabTtyBridge:
                     if not data:
                         break
                     text = decoder.decode(data)
-                    if "\x1d" in text:  # Ctrl+]
-                        break
                     self._send_stdin(text)
         except (KeyboardInterrupt, EOFError):
             pass
@@ -260,8 +254,6 @@ class ColabTtyBridge:
 
                 if msvcrt.kbhit():
                     ch = msvcrt.getwch()
-                    if ch == "\x1d":  # Ctrl+] — detach
-                        break
                     if ch == "\xe0":  # extended key prefix (arrows, nav)
                         seq = EXT_KEYS.get(msvcrt.getwch())
                         if seq:

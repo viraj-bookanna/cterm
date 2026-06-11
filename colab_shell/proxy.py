@@ -86,6 +86,8 @@ _CHUNK = 4096  # max payload bytes per DATA frame
 
 # Shell script that starts pproxy in the background (setsid so it
 # survives after the short-lived terminal is closed).
+# {proxy_port}  — VM-side port pproxy listens on
+# {remote_arg}  — empty string (plain) or -r "socks5://127.0.0.1:9050" (tor)
 _PPROXY_SCRIPT = """\
 #!/bin/bash
 # Kill stale instances
@@ -97,7 +99,48 @@ sleep 0.3
 pip install -q pproxy 2>/dev/null
 pip uninstall -y uvloop 2>/dev/null || true
 
-pproxy -l "http+socks5://127.0.0.1:{proxy_port}" >/tmp/pproxy.log 2>&1 &
+pproxy -l "http+socks5://127.0.0.1:{proxy_port}" {remote_arg} >/tmp/pproxy.log 2>&1 &
+echo "[cterm] pproxy pid=$!"
+"""
+
+# Tor-mode preamble: install Tor if absent, start it, wait for bootstrap.
+# This block runs before pproxy, inside the same bash script.
+_TOR_SETUP_SCRIPT = """\
+#!/bin/bash
+# Kill stale instances (pproxy, agent, tor)
+pkill -f 'pproxy.*{proxy_port}' 2>/dev/null || true
+pkill -f '_cterm_agent.py' 2>/dev/null || true
+pkill -x tor 2>/dev/null || true
+sleep 0.3
+
+# Install Tor if not present
+if ! command -v tor &>/dev/null; then
+    echo "[cterm] Installing tor..."
+    apt-get update -qq && apt-get install -y -qq tor
+fi
+
+# Clear old log and start Tor
+rm -f /tmp/tor.log
+tor --SocksPort 9050 --Log "notice file /tmp/tor.log" --DataDirectory /tmp/tor_data &
+echo "[cterm] tor pid=$!"
+
+# Wait for Tor to bootstrap (up to 120 s)
+for i in $(seq 1 120); do
+    if grep -q "Bootstrapped 100%" /tmp/tor.log 2>/dev/null; then
+        echo "[cterm] Tor bootstrapped."
+        break
+    fi
+    sleep 1
+done
+if ! grep -q "Bootstrapped 100%" /tmp/tor.log 2>/dev/null; then
+    echo "[cterm] WARNING: Tor may not have fully bootstrapped. Continuing anyway."
+fi
+
+# pproxy is incompatible with uvloop on Python 3.12
+pip install -q pproxy 2>/dev/null
+pip uninstall -y uvloop 2>/dev/null || true
+
+pproxy -l "http+socks5://127.0.0.1:{proxy_port}" -r "socks5://127.0.0.1:9050" >/tmp/pproxy.log 2>&1 &
 echo "[cterm] pproxy pid=$!"
 """
 
@@ -198,9 +241,18 @@ def _upload_agent(client: ColabClient) -> bool:
     return True
 
 
-def _upload_pproxy_script(client: ColabClient, proxy_port: int) -> bool:
-    script = _PPROXY_SCRIPT.format(proxy_port=proxy_port)
-    return _upload_file(client, _PPROXY_SCRIPT_REMOTE, script, "pproxy script")
+def _upload_pproxy_script(
+    client: ColabClient, proxy_port: int, use_tor: bool = False
+) -> bool:
+    if use_tor:
+        script = _TOR_SETUP_SCRIPT.format(proxy_port=proxy_port)
+        label = "pproxy+tor script"
+    else:
+        script = _PPROXY_SCRIPT.format(
+            proxy_port=proxy_port, remote_arg=""
+        )
+        label = "pproxy script"
+    return _upload_file(client, _PPROXY_SCRIPT_REMOTE, script, label)
 
 
 # ------------------------------------------------------------------
@@ -274,11 +326,15 @@ class _PtyTunnel:
         client: ColabClient,
         proxy_port: int,
         ready_timeout: int = 60,
+        agent_wait: int = 40,
         on_dead: Callable[[], None] | None = None,
     ) -> None:
         self._client = client
         self._proxy_port = proxy_port
         self._ready_timeout = ready_timeout
+        # Seconds the agent itself should wait for the proxy engine.
+        # Passed as argv[3] to the agent; larger for Tor mode.
+        self._agent_wait = agent_wait
         self._on_dead = on_dead
 
         self._ws: websocket.WebSocket | None = None
@@ -330,7 +386,7 @@ class _PtyTunnel:
         time.sleep(0.5)
         cmd = (
             f"stty raw -echo; "
-            f"exec python3 {_AGENT_REMOTE} 127.0.0.1 {self._proxy_port}\n"
+            f"exec python3 {_AGENT_REMOTE} 127.0.0.1 {self._proxy_port} {self._agent_wait}\n"
         )
         try:
             self._ws.send(json.dumps(["stdin", cmd]))
@@ -535,33 +591,45 @@ def run_proxy(
     client: ColabClient,
     local_port: int,
     vm_proxy_port: int,
+    use_tor: bool = False,
 ) -> int:
     """Set up and run the Colab-only proxy tunnel."""
     print()
-    print("  [EXPERIMENTAL] cterm proxy")
-    print("  Traffic tunnels via Colab's terminal WebSocket (Google-hosted only).")
-    print("  Suitable for light use; large transfers may be slow.")
+    if use_tor:
+        print("  [EXPERIMENTAL] cterm proxy --tor")
+        print("  Traffic exits via the Tor network (installed on the Colab VM).")
+        print("  First run installs Tor via apt and waits for bootstrap (~2 min).")
+    else:
+        print("  [EXPERIMENTAL] cterm proxy")
+        print("  Traffic tunnels via Colab's terminal WebSocket (Google-hosted only).")
+        print("  Suitable for light use; large transfers may be slow.")
     print()
 
     if not client.proxy_url or not client.proxy_token:
         err("Runtime proxy URL/token not set.")
         return 1
 
+    # Tor bootstrap + pproxy launch can take up to ~150 s on a cold runtime;
+    # give both the agent and the local tunnel extra headroom.
+    agent_wait = 240 if use_tor else 40
+    ready_timeout = 300 if use_tor else 60
+
     # 1. Upload the agent (skipped if unchanged on a warm runtime).
     if not _upload_agent(client):
         return 1
 
-    # 2. Upload the pproxy startup script.
-    if not _upload_pproxy_script(client, vm_proxy_port):
+    # 2. Upload the appropriate startup script.
+    if not _upload_pproxy_script(client, vm_proxy_port, use_tor=use_tor):
         return 1
 
-    # 3. Start pproxy on the VM (runs in background via setsid).
-    log("Starting pproxy on the VM...")
+    # 3. Start pproxy (and optionally Tor) on the VM via a short-lived terminal.
+    engine = "Tor + pproxy" if use_tor else "pproxy"
+    log(f"Starting {engine} on the VM...")
     if not _start_pproxy(client):
         return 1
 
-    # 4. Open the data channel.  The agent polls pproxy and only emits
-    #    __CTERM_READY__ once pproxy is accepting connections.
+    # 4. Open the data channel.  The agent polls the proxy engine and only emits
+    #    __CTERM_READY__ once it is accepting connections.
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -572,7 +640,13 @@ def run_proxy(
         except OSError:
             pass
 
-    tunnel = _PtyTunnel(client, vm_proxy_port, on_dead=_on_dead)
+    tunnel = _PtyTunnel(
+        client,
+        vm_proxy_port,
+        ready_timeout=ready_timeout,
+        agent_wait=agent_wait,
+        on_dead=_on_dead,
+    )
     if not tunnel.open():
         return 1
 
@@ -590,15 +664,25 @@ def run_proxy(
         tunnel.close()
         return 1
     server_sock.listen(16)
-    log(f"Listening on 127.0.0.1:{local_port}  (HTTP+SOCKS5 via Colab terminal)")
+    # Short timeout so accept() returns periodically and lets the interpreter
+    # deliver a pending KeyboardInterrupt (blocking accept blocks SIGINT on Windows).
+    server_sock.settimeout(0.5)
+    via = "Tor via Colab terminal" if use_tor else "Colab terminal"
+    log(f"Listening on 127.0.0.1:{local_port}  (HTTP+SOCKS5 via {via})")
     log("Press Ctrl+C to stop.\n")
 
     try:
         while True:
             try:
                 conn, _addr = server_sock.accept()
+            except socket.timeout:
+                # Normal wakeup; check for KeyboardInterrupt and loop again.
+                continue
             except OSError:
                 break
+            # Reset to blocking so recv/sendall in _handle_local_conn and
+            # _dispatch are not affected by the listener's timeout.
+            conn.settimeout(None)
             threading.Thread(
                 target=_handle_local_conn,
                 args=(conn, tunnel),

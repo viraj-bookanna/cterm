@@ -25,13 +25,9 @@ _MOUNT_CMD = "python3 -c \"from google.colab import drive; drive.mount('/content
 
 
 def mount_drive(client: ColabClient, server_id: str) -> bool:
-    """Propagate Drive credentials and inject the mount command.
+    """Propagate Drive credentials to the runtime.
 
     Returns True on success, False on failure.
-
-    The mount command is returned as a string for callers that need to
-    inject it into an already-open TTY session; use ``send_mount_stdin``
-    for that case.
     """
     log("Requesting Google Drive credentials propagation (dry run)...")
     try:
@@ -58,26 +54,16 @@ def mount_drive(client: ColabClient, server_id: str) -> bool:
             err("Authorization cancelled.")
             return False
 
-        # Confirm the live propagation.
-        try:
-            live = client.propagate_credentials(server_id, _AUTH_TYPE, dry_run=False)
-        except requests.RequestException as exc:
-            err(f"Credential propagation failed: {exc}")
-            return False
+    # Perform the live propagation (both branches converge here).
+    try:
+        live = client.propagate_credentials(server_id, _AUTH_TYPE, dry_run=False)
+    except requests.RequestException as exc:
+        err(f"Credential propagation failed: {exc}")
+        return False
 
-        if not live.get("success"):
-            err("Credential propagation was not successful after authorization.")
-            return False
-    else:
-        # Credentials already authorized — perform the live propagation.
-        try:
-            live = client.propagate_credentials(server_id, _AUTH_TYPE, dry_run=False)
-        except requests.RequestException as exc:
-            err(f"Credential propagation failed: {exc}")
-            return False
-        if not live.get("success"):
-            err("Credential propagation was not successful.")
-            return False
+    if not live.get("success"):
+        err("Credential propagation was not successful.")
+        return False
 
     log("Drive credentials propagated successfully.")
     return True

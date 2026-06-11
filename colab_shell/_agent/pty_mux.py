@@ -135,14 +135,14 @@ def _handle_frame(conn_id: int, ftype: int, payload: bytes) -> None:
 
 def _enter_raw_mode() -> None:
     try:
-        import tty
-        import termios
+        import tty  # noqa: PLC0415
+        import termios  # noqa: PLC0415  # type: ignore[import]
         tty.setraw(sys.stdin.fileno())
         # Disable OPOST so \n in output is not translated to \r\n by the PTY.
         attrs = termios.tcgetattr(sys.stdout.fileno())
         attrs[1] &= ~termios.OPOST  # type: ignore[index]
         termios.tcsetattr(sys.stdout.fileno(), termios.TCSADRAIN, attrs)
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -159,16 +159,20 @@ def _wait_for_pproxy(host: str, port: int, tries: int = 80, interval: float = 0.
 
 
 def main() -> None:
-    global PROXY_HOST, PROXY_PORT
+    global PROXY_HOST, PROXY_PORT  # noqa: PLW0603
     if len(sys.argv) >= 2:
         PROXY_HOST = sys.argv[1]
     if len(sys.argv) >= 3:
         PROXY_PORT = int(sys.argv[2])
+    # Optional argv[3]: max seconds to wait for the proxy engine (default 40 s).
+    # Tor mode needs a much larger value (apt install + bootstrap can take ~2 min).
+    wait_secs = int(sys.argv[3]) if len(sys.argv) >= 4 else 40
+    poll_interval = 0.5
+    tries = max(1, int(wait_secs / poll_interval))
 
     _enter_raw_mode()
 
-    # Wait for pproxy before signalling readiness (up to 80 × 0.5 s = 40 s).
-    if not _wait_for_pproxy(PROXY_HOST, PROXY_PORT):
+    if not _wait_for_pproxy(PROXY_HOST, PROXY_PORT, tries=tries, interval=poll_interval):
         sys.stdout.buffer.write(b"__CTERM_NOPROXY__\n")
         sys.stdout.buffer.flush()
         sys.exit(1)
@@ -197,7 +201,7 @@ def main() -> None:
                 continue
             try:
                 raw = base64.b64decode(line)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
             if len(raw) < 3:
                 continue

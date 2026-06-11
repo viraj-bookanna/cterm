@@ -50,7 +50,7 @@ cterm pull /content/results ./local   # download a directory
 cterm drive            # propagate Google Drive credentials (browser step if needed)
 
 cterm proxy --port 1080              # [EXPERIMENTAL] HTTP+SOCKS5 proxy via Colab
-cterm proxy --port 1080 --vm-port 9765
+cterm proxy --port 1080 --tor        # exit via the Tor network
 ```
 
 ### Key bindings (inside the terminal session)
@@ -58,7 +58,6 @@ cterm proxy --port 1080 --vm-port 9765
 | Key | Effect |
 |-----|--------|
 | **Ctrl+C** | Interrupt the running command on the remote shell (SIGINT). Session stays open. |
-| **Ctrl+]** | Disconnect from the remote terminal and return to your local shell. |
 | **Arrow keys** | Navigate command history (Up/Down) and move within the current line (Left/Right). |
 | **Home / End** | Jump to the start or end of the current line. |
 | **PageUp / PageDown** | Scroll through shell history. |
@@ -141,6 +140,23 @@ multiplexes connections over Colab's own Jupyter terminal WebSocket
 throughput is limited and large downloads may be slow or unreliable; session
 dies if the runtime restarts; `pproxy` is installed on the VM automatically.
 Do not use for sensitive traffic.
+
+### Tor mode (`--tor`)
+
+Add `--tor` to route all VM-side traffic through the Tor network:
+
+```bash
+cterm proxy --port 1080 --tor
+# then in another terminal:
+curl --socks5 127.0.0.1:1080 https://check.torproject.org/api/ip   # "IsTor": true
+curl -x http://127.0.0.1:1080 https://ifconfig.me                  # shows a Tor exit-node IP
+```
+
+On the first run, Tor is installed via `apt` and must bootstrap before the
+proxy is ready — this typically takes 60–120 seconds. Subsequent runs on
+the same runtime reuse the already-running Tor instance and start much faster.
+The Tor binary runs entirely within the Colab VM; no traffic leaves Google
+infrastructure until it reaches the Tor entry node.
 
 ## How it works
 

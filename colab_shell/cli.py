@@ -73,7 +73,6 @@ def cmd_connect(args: argparse.Namespace) -> int:
         "clear\r",
     ]
     if getattr(args, "mount_drive", False):
-        from .drive import get_mount_command
         startup.insert(0, get_mount_command())
 
     bridge = ColabTtyBridge(client, startup_cmds=startup)
@@ -227,6 +226,7 @@ def cmd_proxy(args: argparse.Namespace) -> int:
             client=client,
             local_port=args.port,
             vm_proxy_port=args.vm_proxy_port,
+            use_tor=args.tor,
         )
     finally:
         runtime.stop_keep_alive()
@@ -367,6 +367,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=8764,
         dest="vm_proxy_port",
         help="Port pproxy listens on inside the VM (default: 8764).",
+    )
+    p_proxy.add_argument(
+        "--tor",
+        action="store_true",
+        default=False,
+        help=(
+            "Route VM traffic through the Tor network. "
+            "Tor is installed automatically on the VM if absent. "
+            "First run is slow (~2 min for apt install + Tor bootstrap)."
+        ),
     )
     p_proxy.set_defaults(func=cmd_proxy)
 

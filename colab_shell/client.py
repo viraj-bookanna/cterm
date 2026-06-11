@@ -76,11 +76,6 @@ class ColabClient:
             return None
         return json.loads(strip_xss(text))
 
-    # -- user info --------------------------------------------------------
-
-    def get_user_info(self) -> dict:
-        return self._get_json(f"{COLAB_GAPI}/v1/user-info")
-
     # -- assignments ------------------------------------------------------
 
     def list_assignments(self) -> list[dict]:
@@ -162,28 +157,6 @@ class ColabClient:
             log(f"Could not refresh proxy token: {exc}")
         return None
 
-    def get_proxy_token_for_port(self, server_id: str, port: int | str) -> dict | None:
-        """Fetch a proxy token for an arbitrary VM port without mutating self.
-
-        Returns ``{"token": ..., "url": ...}`` or None on failure.
-        Used by cterm proxy to front a custom port on the VM.
-        """
-        url = f"{COLAB_GAPI}/v1/runtime-proxy-token"
-        try:
-            resp = self.session.get(
-                url,
-                params={"endpoint": server_id, "port": str(port)},
-                headers=self._headers(),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = json.loads(strip_xss(resp.text))
-            if isinstance(data, dict) and data.get("token"):
-                return {"token": data["token"], "url": data.get("url", "")}
-        except requests.RequestException as exc:
-            log(f"Could not get proxy token for port {port}: {exc}")
-        return None
-
     # -- keep-alive -------------------------------------------------------
 
     def keep_alive(self, server_id: str) -> None:
@@ -219,19 +192,6 @@ class ColabClient:
         encoded = quote(path.lstrip("/"), safe="/")
         return self.proxy_url.rstrip("/") + "/api/contents/" + encoded
 
-    def contents_list(self, path: str = "") -> list[dict]:
-        """List the contents of a directory on the runtime."""
-        url = self._contents_url(path)
-        resp = self.session.get(
-            url,
-            headers=self._proxy_headers(),
-            params={"content": "1"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("content", []) if isinstance(data, dict) else []
-
     def contents_get(self, path: str, content: bool = True) -> dict:
         """Get a file or directory entry from the runtime.
 
@@ -262,12 +222,6 @@ class ColabClient:
         resp = self.session.put(url, headers=hdrs, json=model, timeout=60)
         resp.raise_for_status()
         return resp.json() if resp.text.strip() else {}
-
-    def contents_delete(self, path: str) -> None:
-        """Delete a file or directory on the runtime."""
-        url = self._contents_url(path)
-        resp = self.session.delete(url, headers=self._proxy_headers(), timeout=30)
-        resp.raise_for_status()
 
     # -- credential propagation (used for Drive mount) --------------------
 
