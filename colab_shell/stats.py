@@ -139,6 +139,13 @@ class StatsDisplay:
 
 def run_stats(client: ColabClient, watch: bool, interval: float) -> int:
     """Fetch and display stats; loop if ``watch`` is True."""
+    # Ensure Unicode sparkline characters can be written on Windows consoles
+    # (default cp1252 codec rejects chars outside Latin-1).
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, OSError):
+        pass
+
     display = StatsDisplay()
     try:
         sys.stdout.write(_HIDE_CURSOR)

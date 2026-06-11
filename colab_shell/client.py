@@ -182,7 +182,10 @@ class ColabClient:
         url = self.proxy_url.rstrip("/") + "/api/colab/resources"
         resp = self.session.get(url, headers=self._proxy_headers(), timeout=15)
         resp.raise_for_status()
-        return resp.json()
+        text = strip_xss(resp.text)
+        if not text.strip():
+            raise RuntimeError("empty resources response")
+        return json.loads(text)
 
     # -- Jupyter contents API (file operations) ---------------------------
 
