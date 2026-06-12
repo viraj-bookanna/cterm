@@ -26,9 +26,9 @@ The Jupyter terminal WebSocket carries Terminado envelopes:
   inbound:  ["stdout", "<ascii-base64>..."]  (may arrive in fragments)
 
 Each decoded frame:  connID (2 bytes big-endian) | type (1 byte) | payload
-  type 1 = OPEN  – open a new connection to pproxy
-  type 2 = DATA  – forward payload bytes
-  type 3 = CLOSE – close the connection
+  type 1 = OPEN  - open a new connection to pproxy
+  type 2 = DATA  - forward payload bytes
+  type 3 = CLOSE - close the connection
 
 Readiness handshake
 -------------------

@@ -153,7 +153,7 @@ curl -x http://127.0.0.1:1080 https://ifconfig.me                  # shows a Tor
 ```
 
 On the first run, Tor is installed via `apt` and must bootstrap before the
-proxy is ready — this typically takes 60–120 seconds. Subsequent runs on
+proxy is ready — this typically takes 60-120 seconds. Subsequent runs on
 the same runtime reuse the already-running Tor instance and start much faster.
 The Tor binary runs entirely within the Colab VM; no traffic leaves Google
 infrastructure until it reaches the Tor entry node.
