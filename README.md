@@ -31,6 +31,7 @@ cterm connect --new    # allocate a fresh runtime even if one exists
 cterm connect --reauth # force a fresh Google sign-in
 cterm connect --mount-drive  # auto-mount Google Drive at /content/drive
 
+cterm types            # list eligible runtime variants and accelerators
 cterm list             # list your active Colab runtimes
 cterm kill <id>        # delete a specific runtime (id or unique prefix)
 cterm kill --all       # delete all your runtimes
@@ -47,10 +48,15 @@ cterm push ./my_dir              # upload a directory recursively
 cterm pull /content/output.csv        # download to ./output.csv
 cterm pull /content/results ./local   # download a directory
 
-cterm drive            # propagate Google Drive credentials (browser step if needed)
+cterm drive            # mount Google Drive at /content/drive (browser step if needed)
 
 cterm proxy --port 1080              # [EXPERIMENTAL] HTTP+SOCKS5 proxy via Colab
 cterm proxy --port 1080 --tor        # exit via the Tor network
+
+cterm ssh                            # [EXPERIMENTAL] SSH shell via Colab tunnel
+cterm ssh -N -L 8888:localhost:8888  # port-forward only, no shell
+
+cterm --version        # show version and exit
 ```
 
 ### Key bindings (inside the terminal session)
@@ -76,6 +82,46 @@ cterm proxy --port 1080 --tor        # exit via the Tor network
 - **Credential cache:** tokens are stored in `~/.cterm/token.json` with
   restricted permissions (mode `0600`) and refreshed automatically. Use
   `cterm logout` to clear them.
+
+## Runtime types (GPU / TPU)
+
+By default `cterm` allocates a CPU runtime. To request a different type, first
+query what your account has available:
+
+```bash
+cterm types
+```
+
+Sample output:
+
+```
+Eligible runtime types for this account:
+
+  VARIANT               ACCELERATOR(S)
+  --------------------  --------------------
+  (none)                CPU  (default, no flags needed)
+  GPU                   T4, A100, L4
+  TPU                   V5E1
+```
+
+Then pass `--variant` and optionally `--accelerator` when allocating. These
+flags are accepted by both `cterm connect` and `cterm ssh`. Because changing
+the runtime type requires a fresh allocation, `--new` is also needed when a
+runtime is already running.
+
+```bash
+cterm --new --variant GPU                          # GPU, API picks the model
+cterm --new --variant GPU --accelerator T4         # request a specific model
+cterm --new --variant GPU --accelerator A100
+cterm --new --variant TPU
+cterm --new --variant TPU --accelerator V5E1
+
+# combine with --keep to leave it running after the session ends
+cterm --new --keep --variant GPU
+```
+
+The values printed by `cterm types` are the exact strings the API expects —
+no guessing or translation is performed.
 
 ## Resource stats (`cterm stats`)
 
@@ -108,17 +154,19 @@ cterm pull /content/results .    # -> ./results/ (recursive)
 ## Google Drive (`cterm drive` / `--mount-drive`)
 
 ```bash
-# Propagate credentials, then mount inside the shell:
+# Auto-mount when opening a session:
 cterm connect --mount-drive
 
-# Or in two steps:
-cterm drive            # browser authorize if needed (one-time)
-cterm connect          # then mount manually inside the shell
+# Or mount on an already-running runtime:
+cterm drive            # browser authorize if needed, then mounts automatically
 ```
 
-The `dfs_ephemeral` credential propagation flow (reversed from the extension)
-is used. When authorization is already cached on Google's side no browser
-interaction is required.
+`cterm drive` propagates ephemeral credentials via the Colab API
+(`dfs_ephemeral`) and then runs the Drive FUSE binary directly on the VM —
+the same mechanism `google.colab.drive.mount()` uses internally, without
+requiring an IPython kernel.  When authorization is already cached on Google's
+side no browser interaction is required; subsequent mounts within the same
+session are instant.
 
 ## Experimental proxy (`cterm proxy`)
 
@@ -135,6 +183,14 @@ Traffic is carried entirely within Google infrastructure: the local listener
 multiplexes connections over Colab's own Jupyter terminal WebSocket
 (`/terminals/websocket/{name}`), with a small base64-framed protocol, and
 `pproxy` on the VM handles the final outbound request.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port PORT` | `1080` | Local TCP port to listen on. |
+| `--vm-proxy-port PORT` | `8764` | Port `pproxy` listens on inside the VM. |
+| `--tor` | off | Route VM traffic through the Tor network. |
 
 **Caveats:** experimental; base64 framing over a PTY adds overhead so
 throughput is limited and large downloads may be slow or unreliable; session
@@ -157,6 +213,41 @@ proxy is ready — this typically takes 60-120 seconds. Subsequent runs on
 the same runtime reuse the already-running Tor instance and start much faster.
 The Tor binary runs entirely within the Colab VM; no traffic leaves Google
 infrastructure until it reaches the Tor entry node.
+
+## Experimental SSH (`cterm ssh`)
+
+Opens an SSH session to the Colab VM over the same muxed WebSocket tunnel used
+by `cterm proxy`. `openssh-server` is installed and configured on the VM
+automatically on first use; a temporary Ed25519 keypair is generated locally
+so the connection is **passwordless and requires no user interaction**.
+
+```bash
+cterm ssh                            # interactive shell
+cterm ssh -N -L 8888:localhost:8888  # Jupyter port-forward, no shell
+cterm ssh -N -R 9000:localhost:9000  # reverse tunnel back to your machine
+cterm ssh -v                         # verbose SSH debug output
+
+# allocate a GPU runtime and forward a Gradio port
+cterm --new --keep --variant GPU ssh -N -L 7860:localhost:7860
+```
+
+Any arguments after the known `cterm` flags are forwarded verbatim to the
+local `ssh` binary, inserted before the host (`root@127.0.0.1`). The
+mandatory auth flags (`-i <keyfile>`, `-o IdentitiesOnly=yes`, etc.) are
+always prepended, so standard SSH options and forwarding rules work as-is.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port PORT` | `2222` | Local TCP port for the SSH tunnel. |
+| `--new` | off | Allocate a fresh runtime even if one already exists. |
+| `--keep` | off | Do not delete the runtime when the session ends. |
+| `--variant` / `--accelerator` | CPU | Same as `cterm connect`. |
+
+**Caveats:** experimental; the base64-framed tunnel adds latency compared with
+direct SSH; throughput is limited. Suitable for interactive use and
+lightweight port-forwarding; not recommended for bulk data transfer.
 
 ## How it works
 

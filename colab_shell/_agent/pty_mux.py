@@ -1,18 +1,21 @@
 """Multiplexed PTY tunnel agent — runs on the Colab VM.
 
-Uploaded by ``cterm proxy`` to ``/content/_cterm_agent.py`` and started inside
+Uploaded by ``cterm`` to ``/content/_cterm_agent.py`` and started inside
 a Jupyter terminal in raw/no-echo mode:
 
-    stty raw -echo; exec python3 /content/_cterm_agent.py 127.0.0.1 8764
+    stty raw -echo; exec python3 /content/_cterm_agent.py <host> <port> [wait_secs]
 
-Protocol (stdin → agent → stdout, all through the Jupyter terminal WebSocket):
+The agent polls <host>:<port> until the target TCP service is ready, then
+multiplexes multiple connections over the terminal's stdin/stdout.
+
+Protocol (stdin → agent → stdout, via the Jupyter terminal WebSocket):
   - Each wire line is: base64(frame) + '\\n'
   - Decoded frame bytes: connID (2 bytes big-endian) | type (1 byte) | payload
       type 1 = OPEN   (payload ignored)
-      type 2 = DATA   (payload = raw proxy bytes)
+      type 2 = DATA   (payload = raw bytes to/from target)
       type 3 = CLOSE  (payload ignored)
-  - Agent polls pproxy until reachable, then prints '__CTERM_READY__\\n'.
-  - If pproxy never starts it prints '__CTERM_NOPROXY__\\n' and exits.
+  - Agent polls target until reachable, then prints '__CTERM_READY__\\n'.
+  - If target never starts it prints '__CTERM_NOPROXY__\\n' and exits.
 
 Pure stdlib — no external dependencies.
 """
@@ -146,8 +149,8 @@ def _enter_raw_mode() -> None:
         pass
 
 
-def _wait_for_pproxy(host: str, port: int, tries: int = 80, interval: float = 0.5) -> bool:
-    """Poll until pproxy is accepting connections or we give up."""
+def _wait_for_target(host: str, port: int, tries: int = 80, interval: float = 0.5) -> bool:
+    """Poll until the target TCP service is accepting connections or we give up."""
     for _ in range(tries):
         try:
             s = socket.create_connection((host, port), timeout=1)
@@ -164,15 +167,15 @@ def main() -> None:
         PROXY_HOST = sys.argv[1]
     if len(sys.argv) >= 3:
         PROXY_PORT = int(sys.argv[2])
-    # Optional argv[3]: max seconds to wait for the proxy engine (default 40 s).
-    # Tor mode needs a much larger value (apt install + bootstrap can take ~2 min).
+    # Optional argv[3]: max seconds to wait for the target service (default 40 s).
+    # Tor mode and sshd installs need larger values.
     wait_secs = int(sys.argv[3]) if len(sys.argv) >= 4 else 40
     poll_interval = 0.5
     tries = max(1, int(wait_secs / poll_interval))
 
     _enter_raw_mode()
 
-    if not _wait_for_pproxy(PROXY_HOST, PROXY_PORT, tries=tries, interval=poll_interval):
+    if not _wait_for_target(PROXY_HOST, PROXY_PORT, tries=tries, interval=poll_interval):
         sys.stdout.buffer.write(b"__CTERM_NOPROXY__\n")
         sys.stdout.buffer.flush()
         sys.exit(1)

@@ -1,6 +1,6 @@
 [project]
 name = "colab-shell"
-version = "0.1.0"
+version = "1.0.0"
 description = "Drop into a Google Colab terminal from your local machine"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -9,7 +9,7 @@ authors = [
 ]
 keywords = ["colab", "google", "terminal", "proxy", "ssh"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",

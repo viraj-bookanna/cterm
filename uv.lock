@@ -200,7 +200,7 @@ wheels = [
 
 [[package]]
 name = "colab-shell"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-auth" },
@@ -212,11 +212,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "google-auth" },
-    { name = "google-auth-oauthlib" },
-    { name = "requests" },
+    { name = "google-auth", specifier = ">=2.28" },
+    { name = "google-auth-oauthlib", specifier = ">=1.2" },
+    { name = "requests", specifier = ">=2.31" },
     { name = "truststore", specifier = ">=0.10.4" },
-    { name = "websocket-client" },
+    { name = "websocket-client", specifier = ">=1.6" },
 ]
 
 [[package]]

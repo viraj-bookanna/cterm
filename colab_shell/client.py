@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -82,18 +82,53 @@ class ColabClient:
         data = self._get_json(f"{COLAB_GAPI}/v1/assignments")
         return data.get("assignments", []) if isinstance(data, dict) else data
 
-    def assign(self, notebook_id: str | None = None) -> dict:
+    def get_user_info(self) -> dict:
+        """Fetch eligible/ineligible accelerators and subscription tier.
+
+        Returns a dict with keys:
+          eligibleAccelerators:   [{variant: str, models: [str]}]
+          ineligibleAccelerators: [{variant: str, models: [str]}]
+          subscriptionTier:       str
+        """
+        data = self._get_json(f"{COLAB_GAPI}/v1/user-info")
+        return data if isinstance(data, dict) else {}
+
+    def assign(
+        self,
+        notebook_id: str | None = None,
+        variant: str | None = None,
+        accelerator: str | None = None,
+    ) -> dict:
         """Allocate a runtime, mirroring the extension's two-step assign flow.
 
         GET ``/tun/m/assign?nbh=...`` returns a pending assignment with an
         xsrf ``token`` field.  POST the same URL with that token to provision
         the runtime and receive the ``endpoint`` + ``runtimeProxyInfo``.
+
+        Pass ``variant`` (``"GPU"`` or ``"TPU"``) and ``accelerator``
+        (e.g. ``"T4"``, ``"L4"``, ``"V5E1"``) to request an accelerated
+        runtime.  Both ``None`` (default) allocates a CPU runtime.
         """
         if notebook_id is None:
             notebook_id = str(uuid.uuid4())
 
-        nbh = notebook_hash(notebook_id)
-        url = f"{COLAB_API}{TUNNEL_PREFIX}/assign?nbh={nbh}&authuser=0"
+        params: dict[str, str] = {
+            "nbh": notebook_hash(notebook_id),
+            "authuser": "0",
+        }
+        # Mirror buildAssignUrl from the Colab VS Code extension.
+        # The user-info API returns proto enum names like VARIANT_GPU / VARIANT_TPU.
+        # The assign URL expects the suffix only (GPU, TPU).  Strip the prefix so
+        # both forms are accepted and new variants work without code changes.
+        if variant and "DEFAULT" not in variant.upper():
+            v = variant.upper()
+            if v.startswith("VARIANT_"):
+                v = v[len("VARIANT_"):]
+            params["variant"] = v
+        if accelerator and accelerator.upper() not in ("NONE", ""):
+            params["accelerator"] = accelerator.upper()
+
+        url = f"{COLAB_API}{TUNNEL_PREFIX}/assign?" + urlencode(params)
 
         data = self._get_json(url)
         if not isinstance(data, dict):

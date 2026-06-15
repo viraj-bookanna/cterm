@@ -32,13 +32,31 @@ def _make_client(force_reauth: bool = False) -> ColabClient:
 def _resolve_runtime(
     client: ColabClient,
     force_new: bool = False,
+    variant: str | None = None,
+    accelerator: str | None = None,
 ) -> tuple[RuntimeManager, str]:
     """Find or allocate a runtime; return (manager, server_id).
 
-    Exits with code 1 if no proxy URL could be obtained.
+    ``variant`` and ``accelerator`` are passed verbatim to the assign API.
+    Exits with code 1 on error or if no proxy URL could be obtained.
     """
     runtime = RuntimeManager(client)
-    server_id = runtime.get_or_create_runtime(force_new=force_new)
+    try:
+        server_id = runtime.get_or_create_runtime(
+            force_new=force_new, variant=variant, accelerator=accelerator
+        )
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        err(f"Runtime allocation failed (HTTP {status}): {exc}")
+        if status == 400 and variant:
+            err(
+                f"The API rejected variant={variant!r}. "
+                "Run `cterm types` to see valid values."
+            )
+        sys.exit(1)
+    except (requests.RequestException, RuntimeError) as exc:
+        err(f"Could not allocate runtime: {exc}")
+        sys.exit(1)
     if not client.proxy_url:
         err("Could not obtain runtime proxy URL.")
         sys.exit(1)
@@ -56,24 +74,27 @@ def cmd_connect(args: argparse.Namespace) -> int:
     print()
 
     client = _make_client(force_reauth=args.reauth)
-    runtime, server_id = _resolve_runtime(client, force_new=args.new)
+    runtime, server_id = _resolve_runtime(
+        client,
+        force_new=args.new,
+        variant=getattr(args, "variant", None),
+        accelerator=getattr(args, "accelerator", None),
+    )
 
-    # Optional: mount Google Drive before entering the shell.
     if getattr(args, "mount_drive", False):
-        from .drive import get_mount_command, mount_drive
+        from .drive import mount_drive
         if not mount_drive(client, server_id):
             err("Drive mount failed; continuing without Drive.")
 
     runtime.start_keep_alive()
 
-    # Build startup commands sent ~1.5 s after the shell is ready so that
-    # tmux is fully initialised before we touch its settings.
+    # Startup keystrokes: clean up the tmux bar and clear the screen.
+    # Drive is mounted before the bridge connects (above), so /content/drive
+    # is already present when the shell first appears.
     startup: list[str] = [
         "tmux set -g status off 2>/dev/null\r",
         "clear\r",
     ]
-    if getattr(args, "mount_drive", False):
-        startup.insert(0, get_mount_command())
 
     bridge = ColabTtyBridge(client, startup_cmds=startup)
     try:
@@ -92,11 +113,44 @@ def cmd_connect(args: argparse.Namespace) -> int:
     finally:
         runtime.stop_keep_alive()
         if args.keep:
-            log("Leaving runtime running (--keep). Use 'cterm kill' "
-                "to remove it later.")
+            log("Leaving runtime running (--keep). Use 'cterm kill' to remove it later.")
         else:
             runtime.delete_runtime()
 
+    return 0
+
+
+def cmd_types(args: argparse.Namespace) -> int:
+    """Print eligible runtime types straight from the API."""
+    client = _make_client(force_reauth=False)
+    try:
+        info = client.get_user_info()
+    except requests.RequestException as exc:
+        err(f"Could not fetch runtime types: {exc}")
+        return 1
+
+    eligible = info.get("eligibleAccelerators") or []
+
+    print("\nEligible runtime types for this account:\n")
+    print(f"  {'VARIANT':<20}  ACCELERATOR(S)")
+    print(f"  {'-'*20}  {'-'*20}")
+    print(f"  {'(none)':<20}  CPU  (default, no flags needed)")
+
+    for entry in eligible:
+        raw_variant = entry.get("variant", "")
+        # Strip VARIANT_ prefix so the displayed value matches what --variant accepts.
+        variant = raw_variant[len("VARIANT_"):] if raw_variant.upper().startswith("VARIANT_") else raw_variant
+        models = entry.get("models") or []
+        accel_str = ", ".join(models) if models else "(none)"
+        print(f"  {variant:<20}  {accel_str}")
+
+    print()
+    print("Usage:")
+    print("  cterm --new                          CPU runtime (default)")
+    print("  cterm --variant GPU --new            GPU, API picks accelerator")
+    print("  cterm --variant GPU --accelerator T4 --new")
+    print("  cterm ssh --variant GPU --accelerator T4 --new")
+    print()
     return 0
 
 
@@ -201,15 +255,14 @@ def cmd_pull(args: argparse.Namespace) -> int:
 
 
 def cmd_drive(_args: argparse.Namespace) -> int:
-    """Mount Google Drive on the active Colab runtime."""
-    from .drive import get_mount_command, mount_drive
+    """Mount Google Drive at /content/drive on the active runtime."""
+    from .drive import mount_drive
     client = _make_client(force_reauth=False)
     _, server_id = _resolve_runtime(client)
     if not mount_drive(client, server_id):
         return 1
-    log("To complete the mount, run inside the Colab shell:")
-    log("  " + get_mount_command().strip())
-    log("Or connect with:  cterm connect --mount-drive")
+    log("Google Drive is mounted at /content/drive on the runtime.")
+    log("Connect with 'cterm' to access it.")
     return 0
 
 
@@ -232,9 +285,67 @@ def cmd_proxy(args: argparse.Namespace) -> int:
         runtime.stop_keep_alive()
 
 
+def cmd_ssh(args: argparse.Namespace) -> int:
+    """[EXPERIMENTAL] SSH shell via Colab's muxed terminal WebSocket."""
+    from .ssh import run_ssh
+
+    client = _make_client(force_reauth=getattr(args, "reauth", False))
+    runtime, _ = _resolve_runtime(
+        client,
+        force_new=getattr(args, "new", False),
+        variant=getattr(args, "variant", None),
+        accelerator=getattr(args, "accelerator", None),
+    )
+    runtime.start_keep_alive()
+
+    # Strip a leading '--' separator that argparse may leave in REMAINDER
+    extra = list(getattr(args, "ssh_extra_args", None) or [])
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+
+    try:
+        rc = run_ssh(
+            client=client,
+            local_port=getattr(args, "port", 2222),
+            extra_ssh_args=extra,
+        )
+    finally:
+        runtime.stop_keep_alive()
+        if getattr(args, "keep", False):
+            log("Leaving runtime running (--keep). Use 'cterm kill' to remove later.")
+        else:
+            runtime.delete_runtime()
+
+    return rc
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
+def _add_runtime_type_flags(parser: argparse.ArgumentParser) -> None:
+    """Add --variant and --accelerator flags to a subparser."""
+    parser.add_argument(
+        "--variant",
+        metavar="VARIANT",
+        default=None,
+        help=(
+            "Runtime variant to request, e.g. VARIANT_GPU, VARIANT_TPU. "
+            "Run `cterm types` to see what your account has available. "
+            "Requires --new when no existing runtime is running."
+        ),
+    )
+    parser.add_argument(
+        "--accelerator",
+        metavar="MODEL",
+        default=None,
+        help=(
+            "Specific accelerator model, e.g. T4, V5E1. "
+            "Only meaningful with --variant. "
+            "Omit to let the API pick the default for the variant."
+        ),
+    )
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -263,8 +374,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_connect.add_argument(
         "--new",
         action="store_true",
-        help="Allocate a fresh runtime even if one already exists "
-        "(lets you run multiple instances at once).",
+        help="Allocate a fresh runtime even if one already exists.",
     )
     p_connect.add_argument(
         "--mount-drive",
@@ -272,7 +382,15 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="mount_drive",
         help="Mount Google Drive automatically at /content/drive on connect.",
     )
+    _add_runtime_type_flags(p_connect)
     p_connect.set_defaults(func=cmd_connect)
+
+    # types
+    p_types = sub.add_parser(
+        "types",
+        help="List eligible runtime types (variants + accelerators) for this account.",
+    )
+    p_types.set_defaults(func=cmd_types)
 
     # list
     p_list = sub.add_parser("list", help="List your active Colab runtimes.")
@@ -345,8 +463,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # drive
     p_drive = sub.add_parser(
         "drive",
-        help="Propagate Google Drive credentials to the runtime. "
-        "Use --mount-drive on connect to auto-mount.",
+        help="Mount Google Drive at /content/drive on the active runtime.",
     )
     p_drive.set_defaults(func=cmd_drive)
 
@@ -380,12 +497,45 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_proxy.set_defaults(func=cmd_proxy)
 
+    # ssh (experimental)
+    p_ssh = sub.add_parser(
+        "ssh",
+        help="[EXPERIMENTAL] Interactive SSH shell via the Colab tunnel.",
+    )
+    p_ssh.add_argument(
+        "--port",
+        type=int,
+        default=2222,
+        help="Local TCP port for the SSH tunnel (default: 2222).",
+    )
+    p_ssh.add_argument(
+        "--new",
+        action="store_true",
+        help="Allocate a fresh runtime even if one already exists.",
+    )
+    p_ssh.add_argument(
+        "--keep",
+        action="store_true",
+        help="Do not delete the runtime when the SSH session ends.",
+    )
+    p_ssh.add_argument("--reauth", action="store_true", help=argparse.SUPPRESS)
+    _add_runtime_type_flags(p_ssh)
+    p_ssh.add_argument(
+        "ssh_extra_args",
+        nargs=argparse.REMAINDER,
+        help=(
+            "Extra arguments forwarded to the ssh client (e.g. -L 1234:host:443 -N). "
+            "Everything after the known cterm flags is passed through unchanged."
+        ),
+    )
+    p_ssh.set_defaults(func=cmd_ssh)
+
     return parser
 
 
 _COMMANDS = {
-    "connect", "list", "kill", "logout",
-    "stats", "push", "pull", "drive", "proxy",
+    "connect", "types", "list", "kill", "logout",
+    "stats", "push", "pull", "drive", "proxy", "ssh",
 }
 _TOP_LEVEL = {"-h", "--help", "--version"}
 
@@ -394,13 +544,10 @@ def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     # Default to the `connect` command when no subcommand is given, so that
-    # `cterm` and `cterm --reauth` both work.
+    # `cterm`, `cterm --new`, and `cterm --variant VARIANT_GPU --new` all work.
     if not argv:
         argv = ["connect"]
     elif argv[0] not in _COMMANDS and argv[0] not in _TOP_LEVEL:
-        # If the first token looks like a subcommand attempt (no leading dash)
-        # but isn't one we recognise, show a clear error rather than silently
-        # treating it as a `connect` argument.
         if not argv[0].startswith("-"):
             err(
                 f"Unknown command '{argv[0]}'. "

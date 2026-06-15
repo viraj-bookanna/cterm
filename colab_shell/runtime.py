@@ -32,7 +32,6 @@ class RuntimeManager:
     def __init__(self, client: ColabClient) -> None:
         self.client = client
         self.server_id: str | None = None
-        self.assignment: dict | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -55,7 +54,19 @@ class RuntimeManager:
             else:
                 log("Using cached runtime proxy token.")
 
-    def get_or_create_runtime(self, force_new: bool = False) -> str:
+    def get_or_create_runtime(
+        self,
+        force_new: bool = False,
+        variant: str | None = None,
+        accelerator: str | None = None,
+    ) -> str:
+        """Find or allocate a runtime.
+
+        If ``force_new`` is False, an existing runtime is reused regardless of
+        the requested type (switching type requires ``--new``).
+        ``variant`` / ``accelerator`` are the raw API values and are forwarded
+        verbatim to ``assign()``; both ``None`` gives a CPU runtime.
+        """
         if force_new:
             log("Forcing a new Colab runtime (ignoring existing ones)...")
         else:
@@ -63,7 +74,6 @@ class RuntimeManager:
             assignments = self.client.list_assignments()
             if assignments:
                 a = assignments[0]
-                self.assignment = a
                 self.server_id = server_id_of(a)
                 self._extract_proxy_info(a)
                 if self.server_id:
@@ -71,8 +81,7 @@ class RuntimeManager:
                     return self.server_id
 
         log("Allocating new Colab runtime (this may take 30-60 s)...")
-        result = self.client.assign()
-        self.assignment = result
+        result = self.client.assign(variant=variant, accelerator=accelerator)
         self.server_id = server_id_of(result)
         self._extract_proxy_info(result)
         if not self.server_id:
