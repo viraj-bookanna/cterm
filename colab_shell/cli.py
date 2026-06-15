@@ -520,15 +520,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_ssh.add_argument("--reauth", action="store_true", help=argparse.SUPPRESS)
     _add_runtime_type_flags(p_ssh)
-    p_ssh.add_argument(
-        "ssh_extra_args",
-        nargs=argparse.REMAINDER,
-        help=(
-            "Extra arguments forwarded to the ssh client (e.g. -L 1234:host:443 -N). "
-            "Everything after the known cterm flags is passed through unchanged."
-        ),
-    )
-    p_ssh.set_defaults(func=cmd_ssh)
+    p_ssh.set_defaults(func=cmd_ssh, ssh_extra_args=[])
 
     return parser
 
@@ -557,7 +549,17 @@ def main(argv: list[str] | None = None) -> None:
         argv = ["connect", *argv]
 
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    # parse_known_args instead of parse_args so that flag-like SSH arguments
+    # (e.g. -D 1080, -L 8888:host:22) are not rejected by argparse before
+    # reaching cmd_ssh.  For every command other than `ssh`, leftover
+    # arguments are still treated as an error.
+    args, unknown = parser.parse_known_args(argv)
+
+    if unknown:
+        if getattr(args, "command", None) == "ssh":
+            args.ssh_extra_args = unknown
+        else:
+            parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
     try:
         rc = args.func(args)
