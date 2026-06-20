@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 import requests
 import websocket
@@ -12,6 +13,7 @@ from . import __version__
 from .auth import ColabAuth
 from .bridge import ColabTtyBridge
 from .client import ColabClient
+from .constants import KEEP_ALIVE_INTERVAL
 from .runtime import RuntimeManager, server_id_of
 from .utils import err, log
 
@@ -230,6 +232,47 @@ def cmd_logout(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keep_alive(args: argparse.Namespace) -> int:
+    """Poll the keep-alive endpoint until Ctrl+C. No TTY is opened."""
+    client = _make_client(force_reauth=False)
+    _, server_id = _resolve_runtime(client)
+
+    if args.id:
+        try:
+            assignments = client.list_assignments()
+        except requests.RequestException as exc:
+            err(f"Could not list runtimes: {exc}")
+            return 1
+        ids = [server_id_of(a) for a in assignments if server_id_of(a)]
+        matches = [s for s in ids if s == args.id or s.startswith(args.id)]
+        if not matches:
+            err(f"No runtime matching '{args.id}'. Run 'cterm list' to see IDs.")
+            return 1
+        if len(matches) > 1:
+            err(f"'{args.id}' is ambiguous; matches {len(matches)} runtimes:")
+            for s in matches:
+                err(f"  {s}")
+            return 1
+        server_id = matches[0]
+
+    short = server_id[:12]
+    print(f"\n[*] Keeping runtime {short}... alive (Ctrl+C to stop).\n")
+
+    ping_count = 0
+    try:
+        while True:
+            client.keep_alive(server_id)
+            ping_count += 1
+            ts = time.strftime("%H:%M:%S")
+            print(f"\r    [{ts}]  ping #{ping_count}  ({short}...)", end="", flush=True)
+            time.sleep(KEEP_ALIVE_INTERVAL)
+    except KeyboardInterrupt:
+        print(f"\n\n[*] Keep-alive stopped. Runtime {short}... is still running.")
+        print("[*] Use 'cterm kill' to delete it when you are done.")
+
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """Display runtime resource usage (RAM, disk, GPU) with sparklines."""
     from .stats import run_stats
@@ -416,6 +459,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_logout = sub.add_parser("logout", help="Clear cached credentials.")
     p_logout.set_defaults(func=cmd_logout)
 
+    # keep-alive
+    p_ka = sub.add_parser(
+        "keep-alive",
+        help="Poll the keep-alive endpoint for a runtime until Ctrl+C. No TTY.",
+    )
+    p_ka.add_argument(
+        "id",
+        nargs="?",
+        default=None,
+        help=(
+            "Runtime id (or unique prefix) to keep alive. "
+            "Defaults to the first active runtime."
+        ),
+    )
+    p_ka.set_defaults(func=cmd_keep_alive)
+
     # stats
     p_stats = sub.add_parser(
         "stats", help="Show runtime resource usage (RAM, disk, GPU)."
@@ -526,7 +585,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _COMMANDS = {
-    "connect", "types", "list", "kill", "logout",
+    "connect", "types", "list", "kill", "logout", "keep-alive",
     "stats", "push", "pull", "drive", "proxy", "ssh",
 }
 _TOP_LEVEL = {"-h", "--help", "--version"}

@@ -26,6 +26,6 @@ truststore.inject_into_ssl()
 # oauthlib machinery is imported/used.
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = ["__version__"]

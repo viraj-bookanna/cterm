@@ -35,6 +35,8 @@ cterm types            # list eligible runtime variants and accelerators
 cterm list             # list your active Colab runtimes
 cterm kill <id>        # delete a specific runtime (id or unique prefix)
 cterm kill --all       # delete all your runtimes
+cterm keep-alive       # keep the active runtime alive (no TTY, Ctrl+C to stop)
+cterm keep-alive <id>  # keep a specific runtime alive by id or prefix
 cterm logout           # clear cached credentials
 
 cterm stats            # one-shot RAM / disk / GPU usage with sparklines
@@ -167,6 +169,37 @@ the same mechanism `google.colab.drive.mount()` uses internally, without
 requiring an IPython kernel.  When authorization is already cached on Google's
 side no browser interaction is required; subsequent mounts within the same
 session are instant.
+
+## Background keep-alive (`cterm keep-alive`)
+
+Keep a runtime alive indefinitely without an open terminal session:
+
+```bash
+cterm keep-alive           # use (or spawn) the active runtime and start polling
+cterm keep-alive m-s-kkb   # keep a specific runtime alive by id or unique prefix
+```
+
+Typical workflow:
+
+```bash
+# 1. Open a session, deploy your job, then exit the shell
+cterm connect --keep       # --keep prevents deletion on shell exit
+
+# 2. In any terminal (same machine or different), start the poller
+cterm keep-alive           # pings every 30 s, prints a timestamped counter
+
+# 3. Ctrl+C to stop polling (runtime stays up)
+# 4. Kill it when you no longer need it
+cterm kill
+```
+
+The poller prints one line per ping so you can confirm it is still running:
+
+```
+[*] Keeping runtime m-s-kkb-use1... alive (Ctrl+C to stop).
+
+    [14:02:00]  ping #1  (m-s-kkb-use1...)
+```
 
 ## Experimental proxy (`cterm proxy`)
 
