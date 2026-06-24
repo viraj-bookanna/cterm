@@ -33,6 +33,7 @@ from .client import ColabClient
 from .tunnel import (
     PtyTunnel,
     handle_local_conn,
+    require_proxy,
     run_script_in_terminal,
     upload_agent,
     upload_file,
@@ -134,8 +135,7 @@ def run_proxy(
         print("  Suitable for light use; large transfers may be slow.")
     print()
 
-    if not client.proxy_url or not client.proxy_token:
-        err("Runtime proxy URL/token not set.")
+    if not require_proxy(client):
         return 1
 
     # Tor bootstrap + pproxy launch can take up to ~150 s on a cold runtime.

@@ -30,13 +30,12 @@ cterm connect --keep   # don't delete the runtime when you exit
 cterm connect --new    # allocate a fresh runtime even if one exists
 cterm connect --reauth # force a fresh Google sign-in
 cterm connect --mount-drive  # auto-mount Google Drive at /content/drive
+cterm connect --self   # inject a self-keep-alive daemon into the runtime
 
 cterm types            # list eligible runtime variants and accelerators
 cterm list             # list your active Colab runtimes
 cterm kill <id>        # delete a specific runtime (id or unique prefix)
 cterm kill --all       # delete all your runtimes
-cterm keep-alive       # keep the active runtime alive (no TTY, Ctrl+C to stop)
-cterm keep-alive <id>  # keep a specific runtime alive by id or prefix
 cterm logout           # clear cached credentials
 
 cterm stats            # one-shot RAM / disk / GPU usage with sparklines
@@ -170,35 +169,30 @@ requiring an IPython kernel.  When authorization is already cached on Google's
 side no browser interaction is required; subsequent mounts within the same
 session are instant.
 
-## Background keep-alive (`cterm keep-alive`)
+## Self-keep-alive (`cterm --self`)
 
-Keep a runtime alive indefinitely without an open terminal session:
-
-```bash
-cterm keep-alive           # use (or spawn) the active runtime and start polling
-cterm keep-alive m-s-kkb   # keep a specific runtime alive by id or unique prefix
-```
-
-Typical workflow:
+Keep a runtime alive indefinitely without any local polling process.
+With `--self`, a lightweight Python daemon is injected directly into the
+Colab VM when the terminal starts. It pings the keep-alive endpoint from
+inside the runtime using your auth tokens, and auto-refreshes them before
+they expire — so the runtime stays alive even after you close your local
+terminal, without cterm running on your machine.
 
 ```bash
-# 1. Open a session, deploy your job, then exit the shell
-cterm connect --keep       # --keep prevents deletion on shell exit
-
-# 2. In any terminal (same machine or different), start the poller
-cterm keep-alive           # pings every 30 s, prints a timestamped counter
-
-# 3. Ctrl+C to stop polling (runtime stays up)
-# 4. Kill it when you no longer need it
-cterm kill
+cterm connect --self         # connect and inject the daemon
+cterm connect --self --keep  # also skip deleting the runtime on exit
 ```
 
-The poller prints one line per ping so you can confirm it is still running:
+The daemon runs in the background on the VM:
+- PID written to `/tmp/.cterm_keepalive.pid`
+- Logs at `/tmp/.cterm_keepalive.log`
+- Touch `/tmp/.cterm_keepalive.stop` on the runtime to stop it gracefully
 
-```
-[*] Keeping runtime m-s-kkb-use1... alive (Ctrl+C to stop).
+To terminate the runtime from your machine:
 
-    [14:02:00]  ping #1  (m-s-kkb-use1...)
+```bash
+cterm kill        # unassigns the runtime (the authoritative kill path)
+cterm kill --all  # kill all runtimes
 ```
 
 ## Experimental proxy (`cterm proxy`)

@@ -108,6 +108,42 @@ def create_terminal(client: ColabClient) -> tuple[str, str]:
     return term_name, ws_url
 
 
+def require_proxy(client: ColabClient) -> bool:
+    """Return True when the client has a proxy URL and token, False otherwise."""
+    if not client.proxy_url or not client.proxy_token:
+        err("Runtime proxy URL/token not set.")
+        return False
+    return True
+
+
+def _connect_terminal_ws(
+    client: ColabClient, label: str
+) -> tuple[websocket.WebSocket, str] | None:
+    """Create a Jupyter terminal and open its WebSocket.
+
+    Returns *(ws, term_name)* on success, or ``None`` on error.
+    The caller is responsible for closing the WebSocket and deleting the terminal.
+    """
+    try:
+        term_name, ws_url = create_terminal(client)
+    except Exception as exc:  # noqa: BLE001
+        err(f"Could not create terminal for {label}: {exc}")
+        return None
+
+    ws = websocket.WebSocket()
+    try:
+        ws.connect(
+            ws_url,
+            header=[f"X-Colab-Runtime-Proxy-Token: {client.proxy_token}"],
+            sslopt={"context": make_ssl_context()},
+        )
+    except (websocket.WebSocketException, OSError) as exc:
+        err(f"Could not connect terminal WebSocket for {label}: {exc}")
+        return None
+
+    return ws, term_name
+
+
 def delete_terminal_bg(client: ColabClient, term_name: str) -> None:
     """Delete a Jupyter terminal in a daemon thread (best-effort)."""
     def _worker() -> None:
@@ -163,30 +199,32 @@ def run_script_in_terminal(
     client: ColabClient,
     remote_script_path: str,
     label: str,
+    launch_cmd: str | None = None,
 ) -> bool:
-    """Run a remote shell script via a short-lived Jupyter terminal.
+    """Run a remote script via a short-lived Jupyter terminal.
 
-    The script is launched under ``setsid`` so it survives the terminal
-    close.  Used to start background daemons (pproxy, sshd) that do not
-    require the IPython kernel.  Returns True if the command was dispatched
-    without error; actual readiness is confirmed by ``PtyTunnel``'s
+    The command is launched under ``setsid`` so it survives the terminal
+    close.  Used to start background daemons that do not require the IPython
+    kernel.  Returns True if the command was dispatched without error; actual
+    readiness for tunnel-based daemons is confirmed by ``PtyTunnel``'s
     ``__CTERM_READY__`` handshake.
-    """
-    proxy_token = client.proxy_token
-    try:
-        term_name, ws_url = create_terminal(client)
-    except Exception as exc:  # noqa: BLE001
-        err(f"Could not create terminal for {label}: {exc}")
-        return False
 
-    cmd = f"setsid bash {remote_script_path} &>/tmp/cterm_{label}.log &\n"
-    ws = websocket.WebSocket()
+    *launch_cmd* overrides the default ``setsid bash <script> &>/tmp/cterm_<label>.log &``.
+    Pass an explicit command when the script is not a bash script (e.g. a Python
+    daemon).  The string must end with ``&`` so the process is backgrounded and
+    the terminal can be closed immediately.
+    """
+    result = _connect_terminal_ws(client, label)
+    if result is None:
+        return False
+    ws, term_name = result
+
+    if launch_cmd is None:
+        cmd = f"setsid bash {remote_script_path} &>/tmp/cterm_{label}.log &\n"
+    else:
+        cmd = launch_cmd if launch_cmd.endswith("\n") else launch_cmd + "\n"
+
     try:
-        ws.connect(
-            ws_url,
-            header=[f"X-Colab-Runtime-Proxy-Token: {proxy_token}"],
-            sslopt={"context": make_ssl_context()},
-        )
         time.sleep(0.5)
         ws.send(json.dumps(["stdin", cmd]))
         time.sleep(1.0)
@@ -220,22 +258,14 @@ def run_terminal_capture(
     delimited word immediately following *result_marker* (empty string when the
     marker was not found before the timeout or on error).
     """
-    proxy_token = client.proxy_token
-    try:
-        term_name, ws_url = create_terminal(client)
-    except Exception as exc:  # noqa: BLE001
-        err(f"Could not create terminal for capture: {exc}")
+    result = _connect_terminal_ws(client, "capture")
+    if result is None:
         return "", ""
+    ws, term_name = result
 
-    ws = websocket.WebSocket()
     full_output: list[str] = []
     token = ""
     try:
-        ws.connect(
-            ws_url,
-            header=[f"X-Colab-Runtime-Proxy-Token: {proxy_token}"],
-            sslopt={"context": make_ssl_context()},
-        )
         time.sleep(0.5)
         ws.send(json.dumps(["stdin", command + "\n"]))
 

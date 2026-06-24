@@ -194,10 +194,13 @@ class ColabClient:
 
     # -- keep-alive -------------------------------------------------------
 
+    def keep_alive_url(self, server_id: str) -> str:
+        """Return the keep-alive endpoint URL for *server_id*."""
+        return f"{COLAB_API}{TUNNEL_PREFIX}/{server_id}/keep-alive/?authuser=0"
+
     def keep_alive(self, server_id: str) -> None:
-        url = f"{COLAB_API}{TUNNEL_PREFIX}/{server_id}/keep-alive/?authuser=0"
         try:
-            self.session.get(url, headers=self._headers(), timeout=10)
+            self.session.get(self.keep_alive_url(server_id), headers=self._headers(), timeout=10)
         except requests.RequestException:
             pass
 

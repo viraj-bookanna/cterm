@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 
 import requests
 import websocket
@@ -13,7 +12,6 @@ from . import __version__
 from .auth import ColabAuth
 from .bridge import ColabTtyBridge
 from .client import ColabClient
-from .constants import KEEP_ALIVE_INTERVAL
 from .runtime import RuntimeManager, server_id_of
 from .utils import err, log
 
@@ -88,7 +86,19 @@ def cmd_connect(args: argparse.Namespace) -> int:
         if not mount_drive(client, server_id):
             err("Drive mount failed; continuing without Drive.")
 
-    runtime.start_keep_alive()
+    # Inject the self-keep-alive daemon via file upload before opening the
+    # interactive TTY (mirrors the Drive mount block above).  On failure, fall
+    # back to local polling so the session is never left without keep-alive.
+    local_keep_alive = True
+    if getattr(args, "self_keep_alive", False):
+        from .keepalive import inject_self_keep_alive
+        if inject_self_keep_alive(client, server_id):
+            local_keep_alive = False
+        else:
+            err("Self-keep-alive injection failed; falling back to local polling.")
+
+    if local_keep_alive:
+        runtime.start_keep_alive()
 
     # Startup keystrokes: clean up the tmux bar and clear the screen.
     # Drive is mounted before the bridge connects (above), so /content/drive
@@ -113,7 +123,8 @@ def cmd_connect(args: argparse.Namespace) -> int:
             err(f"Terminal session ended: {exc}")
             return 1
     finally:
-        runtime.stop_keep_alive()
+        if local_keep_alive:
+            runtime.stop_keep_alive()
         if args.keep:
             log("Leaving runtime running (--keep). Use 'cterm kill' to remove it later.")
         else:
@@ -229,47 +240,6 @@ def cmd_kill(args: argparse.Namespace) -> int:
 
 def cmd_logout(_args: argparse.Namespace) -> int:
     ColabAuth.clear_cache()
-    return 0
-
-
-def cmd_keep_alive(args: argparse.Namespace) -> int:
-    """Poll the keep-alive endpoint until Ctrl+C. No TTY is opened."""
-    client = _make_client(force_reauth=False)
-    _, server_id = _resolve_runtime(client)
-
-    if args.id:
-        try:
-            assignments = client.list_assignments()
-        except requests.RequestException as exc:
-            err(f"Could not list runtimes: {exc}")
-            return 1
-        ids = [server_id_of(a) for a in assignments if server_id_of(a)]
-        matches = [s for s in ids if s == args.id or s.startswith(args.id)]
-        if not matches:
-            err(f"No runtime matching '{args.id}'. Run 'cterm list' to see IDs.")
-            return 1
-        if len(matches) > 1:
-            err(f"'{args.id}' is ambiguous; matches {len(matches)} runtimes:")
-            for s in matches:
-                err(f"  {s}")
-            return 1
-        server_id = matches[0]
-
-    short = server_id[:12]
-    print(f"\n[*] Keeping runtime {short}... alive (Ctrl+C to stop).\n")
-
-    ping_count = 0
-    try:
-        while True:
-            client.keep_alive(server_id)
-            ping_count += 1
-            ts = time.strftime("%H:%M:%S")
-            print(f"\r    [{ts}]  ping #{ping_count}  ({short}...)", end="", flush=True)
-            time.sleep(KEEP_ALIVE_INTERVAL)
-    except KeyboardInterrupt:
-        print(f"\n\n[*] Keep-alive stopped. Runtime {short}... is still running.")
-        print("[*] Use 'cterm kill' to delete it when you are done.")
-
     return 0
 
 
@@ -425,6 +395,16 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="mount_drive",
         help="Mount Google Drive automatically at /content/drive on connect.",
     )
+    p_connect.add_argument(
+        "--self",
+        action="store_true",
+        dest="self_keep_alive",
+        help=(
+            "Inject a self-keep-alive daemon into the Colab runtime itself. "
+            "The runtime polls its own keep-alive endpoint using your auth tokens, "
+            "so no local polling is needed. Use 'cterm kill' to terminate as usual."
+        ),
+    )
     _add_runtime_type_flags(p_connect)
     p_connect.set_defaults(func=cmd_connect)
 
@@ -458,22 +438,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # logout
     p_logout = sub.add_parser("logout", help="Clear cached credentials.")
     p_logout.set_defaults(func=cmd_logout)
-
-    # keep-alive
-    p_ka = sub.add_parser(
-        "keep-alive",
-        help="Poll the keep-alive endpoint for a runtime until Ctrl+C. No TTY.",
-    )
-    p_ka.add_argument(
-        "id",
-        nargs="?",
-        default=None,
-        help=(
-            "Runtime id (or unique prefix) to keep alive. "
-            "Defaults to the first active runtime."
-        ),
-    )
-    p_ka.set_defaults(func=cmd_keep_alive)
 
     # stats
     p_stats = sub.add_parser(

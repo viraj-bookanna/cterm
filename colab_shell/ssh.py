@@ -38,7 +38,7 @@ import threading
 import time
 
 from .client import ColabClient
-from .tunnel import PtyTunnel, handle_local_conn, run_script_in_terminal, upload_agent, upload_file
+from .tunnel import PtyTunnel, handle_local_conn, require_proxy, run_script_in_terminal, upload_agent, upload_file
 from .utils import err, log
 
 # ------------------------------------------------------------------
@@ -158,8 +158,7 @@ def run_ssh(
     print("  Slower than direct SSH; fine for interactive use.")
     print()
 
-    if not client.proxy_url or not client.proxy_token:
-        err("Runtime proxy URL/token not set.")
+    if not require_proxy(client):
         return 1
 
     ssh_bin = _find_ssh()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import warnings
 
+import truststore
 import urllib3
 
 # Suppress urllib3's InsecureRequestWarning — truststore already injects the
@@ -17,8 +18,6 @@ import urllib3
 warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 
 # Use the OS trust store for TLS so corporate / OS-managed root CAs work.
-import truststore
-
 truststore.inject_into_ssl()
 
 # Google may add `openid` to the granted scopes, which otherwise makes
