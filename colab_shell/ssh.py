@@ -9,7 +9,8 @@ Architecture
 
 Flow
 ----
-1. Generate a throwaway Ed25519 keypair (in memory).
+1. Reuse an existing local SSH key (~/.ssh/id_*) if one is present, otherwise
+   generate a throwaway Ed25519 keypair (in memory).
 2. Upload and run a one-shot sshd setup script on the VM:
      - Installs openssh-server if absent (idempotent).
      - Configures key-based root login; injects the session public key.
@@ -119,6 +120,31 @@ def _generate_keypair() -> tuple[bytes, str]:
     return priv, pub.decode().strip()
 
 
+def _find_local_keypair() -> tuple[str, str] | None:
+    """Return (private_key_path, public_key_OpenSSH_str) for an existing local
+    SSH key, or None if no usable keypair is found in ``~/.ssh``.
+
+    Looks for a public key file that has a matching private key, preferring
+    modern key types (Ed25519 > ECDSA > RSA).
+    """
+    ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+    if not os.path.isdir(ssh_dir):
+        return None
+    for name in ("id_ed25519", "id_ecdsa", "id_rsa"):
+        priv = os.path.join(ssh_dir, name)
+        pub = priv + ".pub"
+        if not (os.path.isfile(priv) and os.path.isfile(pub)):
+            continue
+        try:
+            with open(pub, encoding="utf-8") as f:
+                pub_line = f.read().strip()
+        except OSError:
+            continue
+        if pub_line:
+            return priv, pub_line
+    return None
+
+
 # ------------------------------------------------------------------
 # Find local ssh binary
 # ------------------------------------------------------------------
@@ -169,12 +195,20 @@ def run_ssh(
         )
         return 1
 
-    # 1. Generate a throwaway keypair for this session.
-    try:
-        priv_bytes, pubkey = _generate_keypair()
-    except Exception as exc:  # noqa: BLE001
-        err(f"Could not generate SSH keypair: {exc}")
-        return 1
+    # 1. Reuse an existing local SSH key if one is present (works the same on
+    #    Windows, Linux and macOS via ~/.ssh), else generate a throwaway one.
+    local_key_path: str | None = None
+    priv_bytes: bytes | None = None
+    local = _find_local_keypair()
+    if local:
+        local_key_path, pubkey = local
+        log(f"Using existing local SSH key: {local_key_path}")
+    else:
+        try:
+            priv_bytes, pubkey = _generate_keypair()
+        except Exception as exc:  # noqa: BLE001
+            err(f"Could not generate SSH keypair: {exc}")
+            return 1
 
     # 2. Upload the mux agent (skipped if unchanged on a warm runtime).
     if not upload_agent(client):
@@ -243,19 +277,24 @@ def run_ssh(
 
     threading.Thread(target=_accept_loop, daemon=True).start()
 
-    # 7. Write private key to a temp file and launch the ssh client.
+    # 7. Resolve the private key to hand to the ssh client and launch it.
+    #    Reused local keys are used in place; a generated key is written to a
+    #    temp file (and removed afterwards).
     null_dev = "NUL" if os.name == "nt" else "/dev/null"
     tmp_key: str | None = None
     rc = 1
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", suffix=".pem", delete=False
-        ) as f:
-            f.write(priv_bytes)
-            tmp_key = f.name
-
-        if os.name != "nt":
-            os.chmod(tmp_key, 0o600)
+        if local_key_path:
+            key_path = local_key_path
+        else:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", suffix=".pem", delete=False
+            ) as f:
+                f.write(priv_bytes or b"")
+                tmp_key = f.name
+            if os.name != "nt":
+                os.chmod(tmp_key, 0o600)
+            key_path = tmp_key
 
         extra = list(extra_ssh_args or [])
         log(
@@ -272,7 +311,7 @@ def run_ssh(
         ssh_cmd = [
             ssh_bin,
             "-p", str(local_port),
-            "-i", tmp_key,
+            "-i", key_path,
             "-o", "StrictHostKeyChecking=no",
             "-o", f"UserKnownHostsFile={null_dev}",
             "-o", "PubkeyAuthentication=yes",
