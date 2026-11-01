@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
+import webbrowser
 
 import requests
 
@@ -27,12 +29,19 @@ class ColabAuth:
       - scopes ``email https://www.googleapis.com/auth/colaboratory profile``
     """
 
-    def __init__(self, force_reauth: bool = False) -> None:
+    def __init__(
+        self,
+        force_reauth: bool = False,
+        no_browser: bool | None = None,
+    ) -> None:
         self.access_token: str | None = None
         self.refresh_token: str | None = None
         self.expiry: float = 0
         self.scopes: list[str] = []
         self.force_reauth = force_reauth
+        # None = auto-detect; True = never try to launch a browser; False =
+        # always try (and fall back to printing the URL on failure).
+        self.no_browser = no_browser
 
     def ensure_authenticated(self) -> str:
         """Return a valid access token, refreshing or re-authing as needed."""
@@ -62,6 +71,28 @@ class ColabAuth:
 
     # -- interactive login ------------------------------------------------
 
+    @staticmethod
+    def _headless_environment() -> bool:
+        """Best-effort check: can we actually open a browser on this host?
+
+        True on headless Linux (no DISPLAY/WAYLAND_DISPLAY, no browser
+        registered) and anywhere ``webbrowser.get()`` cannot resolve a usable
+        handler. False on desktop OSes where a default browser is set.
+        """
+        # Honour explicit CI / headless env vars.
+        if os.environ.get("CTERM_NO_BROWSER") or os.environ.get("CI"):
+            return True
+        # On Linux a browser without X / Wayland cannot be opened.
+        if sys.platform.startswith("linux"):
+            if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+                return True
+        # Final probe: see if webbrowser has any usable handler.
+        try:
+            webbrowser.get()
+            return False
+        except webbrowser.Error:
+            return True
+
     def _interactive_login(self) -> None:
         from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -75,15 +106,56 @@ class ColabAuth:
             }
         }
         flow = InstalledAppFlow.from_client_config(client_config, scopes=SCOPES)
-        log("Opening browser for Google sign-in...")
-        creds = flow.run_local_server(
-            host="127.0.0.1",
-            port=0,  # random free port, like the extension
-            open_browser=True,
-            access_type="offline",
-            prompt="consent",
-            include_granted_scopes="false",
-        )
+
+        if self.no_browser is None:
+            open_browser = not self._headless_environment()
+        else:
+            open_browser = not self.no_browser
+
+        if open_browser:
+            log("Opening browser for Google sign-in (fallback: URL will be printed)...")
+            prompt_msg = (
+                "If the browser did not open, visit this URL manually to "
+                "authorize cterm:\n\n    {url}\n"
+            )
+        else:
+            log("Headless environment detected; printing the sign-in URL instead of opening a browser.")
+            log("Pass --browser to force the browser-open attempt.")
+            prompt_msg = (
+                "Open this URL in a browser (on this machine or any other, "
+                "e.g. your laptop) to authorize cterm:\n\n    {url}\n\n"
+                "Then come back here; this process is waiting for the redirect "
+                "on 127.0.0.1 (random port). If you are on a remote host, run "
+                "your terminal with SSH local port-forwarding or paste the "
+                "redirect URL back after signing in."
+            )
+
+        try:
+            creds = flow.run_local_server(
+                host="127.0.0.1",
+                port=0,  # random free port, like the extension
+                open_browser=open_browser,
+                authorization_prompt_message=prompt_msg,
+                access_type="offline",
+                prompt="consent",
+                include_granted_scopes="false",
+            )
+        except webbrowser.Error as exc:
+            # Browser was advertised as available but open failed at runtime -
+            # retry once with open_browser=False so the URL still gets printed.
+            log(f"Could not open browser ({exc}); printing URL instead.")
+            creds = flow.run_local_server(
+                host="127.0.0.1",
+                port=0,
+                open_browser=False,
+                authorization_prompt_message=(
+                    "Open this URL in any browser to authorize cterm:\n\n"
+                    "    {url}\n"
+                ),
+                access_type="offline",
+                prompt="consent",
+                include_granted_scopes="false",
+            )
         self.access_token = creds.token
         self.refresh_token = creds.refresh_token
         self.expiry = (

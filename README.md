@@ -25,10 +25,11 @@ python -m colab_shell
 
 ```bash
 cterm                  # connect to a runtime terminal (default)
-cterm connect          # same as above
-cterm connect --keep   # don't delete the runtime when you exit
+cterm connect          # same as above - runtime SURVIVES disconnect (new default)
+cterm connect --rm     # delete the runtime when this session exits (opt-in)
 cterm connect --new    # allocate a fresh runtime even if one exists
 cterm connect --reauth # force a fresh Google sign-in
+cterm connect --no-browser # print the sign-in URL instead of opening a browser (headless hosts)
 cterm connect --mount-drive  # auto-mount Google Drive at /content/drive
 cterm connect --self   # inject a self-keep-alive daemon into the runtime
 
@@ -77,12 +78,21 @@ cterm --version        # show version and exit
 - **Clean display:** the tmux status bar is hidden on connect so the session
   looks and feels like a plain SSH terminal.
 - **Keep-alive:** the runtime is pinged periodically so it won't idle out.
-- **Auto-delete on exit:** the runtime is released on exit by default. Pass
-  `--keep` to leave it running.
+- **Persistence by default:** disconnecting (including an accidental network
+  drop) leaves the runtime running - your work is not destroyed. Pass `--rm`
+  to opt in to auto-delete on exit, or use `cterm kill` later to release the
+  runtime explicitly. The old `--keep` flag is accepted for backward
+  compatibility but is now a no-op (it's the default behavior).
 - **Robust disconnect:** if the network drops, the session ends cleanly.
 - **Credential cache:** tokens are stored in `~/.cterm/token.json` with
   restricted permissions (mode `0600`) and refreshed automatically. Use
   `cterm logout` to clear them.
+- **Headless sign-in:** cterm auto-detects headless Linux (no `DISPLAY` /
+  `WAYLAND_DISPLAY`) and in that case prints the Google sign-in URL to the
+  terminal instead of trying to launch a browser (which would otherwise hang
+  or crash on servers with no browser installed). Pass `--no-browser` to
+  force this behaviour from any machine, `--browser` to force the open
+  attempt, or set `CTERM_NO_BROWSER=1` to apply it to every subcommand.
 
 ## Runtime types (GPU / TPU)
 
@@ -117,8 +127,9 @@ cterm --new --variant GPU --accelerator A100
 cterm --new --variant TPU
 cterm --new --variant TPU --accelerator V5E1
 
-# combine with --keep to leave it running after the session ends
-cterm --new --keep --variant GPU
+# runtimes already survive disconnect by default; add --rm if you want
+# the runtime deleted when this session exits:
+cterm --new --rm --variant GPU
 ```
 
 The values printed by `cterm types` are the exact strings the API expects —
@@ -179,8 +190,22 @@ they expire — so the runtime stays alive even after you close your local
 terminal, without cterm running on your machine.
 
 ```bash
-cterm connect --self         # connect and inject the daemon
-cterm connect --self --keep  # also skip deleting the runtime on exit
+cterm connect --self   # connect, inject the daemon, leave the runtime up on exit
+```
+
+A single `--self` call is enough. The injector waits (up to 15 s) until the
+daemon's PID file appears on the VM before returning, and it reuses an
+existing daemon if one is already running - so repeating the command does
+not stack duplicate pingers.
+
+Because the new default is to leave the runtime running on disconnect,
+`--self` no longer needs to be combined with any other flag. If for some
+reason you want the runtime deleted when this specific session exits, pair
+it with `--rm`:
+
+```bash
+cterm connect --self --rm   # inject daemon, but also delete this runtime on exit
+                            # (unusual; mostly useful for test runs)
 ```
 
 The daemon runs in the background on the VM:

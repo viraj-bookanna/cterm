@@ -20,13 +20,31 @@ from .utils import err, log
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _make_client(force_reauth: bool = False) -> ColabClient:
+def _make_client(
+    force_reauth: bool = False,
+    no_browser: bool | None = None,
+) -> ColabClient:
     if force_reauth:
         ColabAuth.clear_cache()
-    auth = ColabAuth(force_reauth=force_reauth)
+    auth = ColabAuth(force_reauth=force_reauth, no_browser=no_browser)
     auth.ensure_authenticated()
     log("Authenticated.")
     return ColabClient(auth)
+
+
+def _browser_pref(args: argparse.Namespace) -> bool | None:
+    """Resolve the browser-opening preference.
+
+    Returns:
+        True   - never open a browser (user passed --no-browser or env var).
+        False  - always try to open a browser (user passed --browser).
+        None   - auto-detect (default).
+    """
+    if getattr(args, "no_browser", False):
+        return True
+    if getattr(args, "force_browser", False):
+        return False
+    return None
 
 
 def _resolve_runtime(
@@ -73,7 +91,10 @@ def cmd_connect(args: argparse.Namespace) -> int:
     print("=" * 60)
     print()
 
-    client = _make_client(force_reauth=args.reauth)
+    client = _make_client(
+        force_reauth=args.reauth,
+        no_browser=_browser_pref(args),
+    )
     runtime, server_id = _resolve_runtime(
         client,
         force_new=args.new,
@@ -125,12 +146,27 @@ def cmd_connect(args: argparse.Namespace) -> int:
     finally:
         if local_keep_alive:
             runtime.stop_keep_alive()
-        if args.keep:
-            log("Leaving runtime running (--keep). Use 'cterm kill' to remove it later.")
-        else:
+        if _should_rm_on_exit(args):
             runtime.delete_runtime()
+        else:
+            log(
+                "Leaving runtime running. Use 'cterm kill' to remove it later, "
+                "or pass --rm next time to auto-delete on exit."
+            )
 
     return 0
+
+
+def _should_rm_on_exit(args: argparse.Namespace) -> bool:
+    """Return True if the runtime should be deleted when this command exits.
+
+    New default: keep the runtime (an accidental disconnect must not destroy
+    work). Opt-in via --rm. The legacy --keep flag is accepted silently so
+    old aliases/scripts keep working, but has no effect under the new default.
+    """
+    if getattr(args, "keep", False):
+        log("--keep is deprecated and now the default; ignoring. Use --rm to opt in to auto-delete.")
+    return bool(getattr(args, "rm_on_exit", False))
 
 
 def cmd_types(args: argparse.Namespace) -> int:
@@ -302,7 +338,10 @@ def cmd_ssh(args: argparse.Namespace) -> int:
     """[EXPERIMENTAL] SSH shell via Colab's muxed terminal WebSocket."""
     from .ssh import run_ssh
 
-    client = _make_client(force_reauth=getattr(args, "reauth", False))
+    client = _make_client(
+        force_reauth=getattr(args, "reauth", False),
+        no_browser=_browser_pref(args),
+    )
     runtime, _ = _resolve_runtime(
         client,
         force_new=getattr(args, "new", False),
@@ -324,10 +363,13 @@ def cmd_ssh(args: argparse.Namespace) -> int:
         )
     finally:
         runtime.stop_keep_alive()
-        if getattr(args, "keep", False):
-            log("Leaving runtime running (--keep). Use 'cterm kill' to remove later.")
-        else:
+        if _should_rm_on_exit(args):
             runtime.delete_runtime()
+        else:
+            log(
+                "Leaving runtime running. Use 'cterm kill' to remove it later, "
+                "or pass --rm next time to auto-delete on exit."
+            )
 
     return rc
 
@@ -335,6 +377,31 @@ def cmd_ssh(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
+def _add_browser_flags(parser: argparse.ArgumentParser) -> None:
+    """Add --no-browser / --browser flags.
+
+    Needed on every subcommand that may trigger first-time or forced
+    re-authentication (anything that calls _make_client).
+    """
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument(
+        "--no-browser",
+        action="store_true",
+        dest="no_browser",
+        help=(
+            "Do not try to open a web browser for the Google sign-in step; "
+            "print the URL to the terminal and wait for the redirect. "
+            "Auto-enabled on headless Linux (no DISPLAY) and in CI."
+        ),
+    )
+    g.add_argument(
+        "--browser",
+        action="store_true",
+        dest="force_browser",
+        help="Force the browser-open attempt even if headless is auto-detected.",
+    )
+
 
 def _add_runtime_type_flags(parser: argparse.ArgumentParser) -> None:
     """Add --variant and --accelerator flags to a subparser."""
@@ -380,9 +447,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Force a fresh Google sign-in, ignoring any cached token.",
     )
     p_connect.add_argument(
+        "--rm",
+        action="store_true",
+        dest="rm_on_exit",
+        help="Delete the runtime when this session exits (opt-in; default is to keep).",
+    )
+    # Legacy no-op for backward compatibility (prints a deprecation note at exit).
+    p_connect.add_argument(
         "--keep",
         action="store_true",
-        help="Do not delete the runtime on exit (keeps using your hours).",
+        help=argparse.SUPPRESS,
     )
     p_connect.add_argument(
         "--new",
@@ -400,12 +474,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="self_keep_alive",
         help=(
-            "Inject a self-keep-alive daemon into the Colab runtime itself. "
-            "The runtime polls its own keep-alive endpoint using your auth tokens, "
-            "so no local polling is needed. Use 'cterm kill' to terminate as usual."
+            "Inject an on-VM self-keep-alive daemon that pings Colab from inside "
+            "the runtime using your auth tokens. Lets the runtime survive after "
+            "you disconnect without any local polling. A single --self call is "
+            "enough; the injector waits until the daemon's PID file appears and "
+            "reuses an existing daemon if one is already running."
         ),
     )
     _add_runtime_type_flags(p_connect)
+    _add_browser_flags(p_connect)
     p_connect.set_defaults(func=cmd_connect)
 
     # types
@@ -537,12 +614,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Allocate a fresh runtime even if one already exists.",
     )
     p_ssh.add_argument(
+        "--rm",
+        action="store_true",
+        dest="rm_on_exit",
+        help="Delete the runtime when the SSH session ends (opt-in; default is to keep).",
+    )
+    # Legacy no-op for backward compatibility.
+    p_ssh.add_argument(
         "--keep",
         action="store_true",
-        help="Do not delete the runtime when the SSH session ends.",
+        help=argparse.SUPPRESS,
     )
     p_ssh.add_argument("--reauth", action="store_true", help=argparse.SUPPRESS)
     _add_runtime_type_flags(p_ssh)
+    _add_browser_flags(p_ssh)
     p_ssh.set_defaults(func=cmd_ssh, ssh_extra_args=[])
 
     return parser
