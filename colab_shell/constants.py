@@ -33,5 +33,15 @@ TOKEN_FILE = TOKEN_DIR / "token.json"
 
 XSS_PREFIX = ")]}'\n"
 
-# How often (seconds) to ping the runtime to keep it from idling out.
-KEEP_ALIVE_INTERVAL = 30
+# Baseline interval (seconds) between keep-alive pings. The on-VM daemon
+# jitters this uniformly in ``[BASE * 0.5, BASE * 1.5]`` so pings don't
+# land on a predictable cadence that Colab's idle detector can filter.
+KEEP_ALIVE_INTERVAL = 15
+
+# How often (seconds) the on-VM daemon re-fetches the runtime proxy token
+# (which doubles as an editor-activity signal). Jittered 0.7x..1.3x.
+PROXY_TOKEN_REFRESH_INTERVAL = 120
+
+# How often (seconds) the on-VM daemon lists assignments as another
+# activity signal. Jittered 0.7x..1.3x.
+ASSIGNMENTS_PING_INTERVAL = 180

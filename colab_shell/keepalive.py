@@ -28,10 +28,14 @@ from pathlib import Path
 from .client import ColabClient
 from .constants import (
     APP_NAME,
+    ASSIGNMENTS_PING_INTERVAL,
     CLIENT_ID,
     CLIENT_SECRET,
+    COLAB_API,
+    COLAB_GAPI,
     EXTENSION_VERSION,
     KEEP_ALIVE_INTERVAL,
+    PROXY_TOKEN_REFRESH_INTERVAL,
 )
 from .tunnel import run_script_in_terminal, upload_file
 from .utils import err, log
@@ -115,9 +119,14 @@ def inject_self_keep_alive(client: ColabClient, server_id: str) -> bool:
         "REFRESH_TOKEN": client.auth.refresh_token or "",
         "CLIENT_ID": CLIENT_ID,
         "CLIENT_SECRET": CLIENT_SECRET,
+        "SERVER_ID": server_id,
         "KA_URL": client.keep_alive_url(server_id),
+        "PROXY_TOKEN_URL": f"{COLAB_GAPI}/v1/runtime-proxy-token",
+        "ASSIGNMENTS_URL": f"{COLAB_GAPI}/v1/assignments",
         "TOKEN_URL": _TOKEN_URL,
         "INTERVAL": KEEP_ALIVE_INTERVAL,
+        "PROXY_REFRESH_INTERVAL": PROXY_TOKEN_REFRESH_INTERVAL,
+        "ASSIGNMENTS_INTERVAL": ASSIGNMENTS_PING_INTERVAL,
         # Required so the on-VM pings carry the same extension-identifying
         # headers the local client sends. Without them Colab silently drops
         # the request from idle accounting.
